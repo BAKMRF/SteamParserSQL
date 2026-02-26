@@ -355,7 +355,21 @@ class DatabaseManager:
             cursor.execute("""
                 SELECT * FROM session_summary WHERE session_id = %s
             """, (session_id,))
-            return cursor.fetchone()
+            result = cursor.fetchone()
+            
+            # Добавляем timestamp_str если его нет
+            if result and 'parse_time' in result:
+                parse_time = result['parse_time']
+                if isinstance(parse_time, datetime):
+                    result['timestamp_str'] = parse_time.strftime("%Y%m%d_%H%M%S")
+                elif parse_time:
+                    try:
+                        dt = datetime.fromisoformat(str(parse_time))
+                        result['timestamp_str'] = dt.strftime("%Y%m%d_%H%M%S")
+                    except:
+                        result['timestamp_str'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            return result
     
     def get_session_profiles(self, session_id):
         """Получает все профили для конкретной сессии"""
@@ -717,7 +731,12 @@ class SteamParser:
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         
         # Дата и время
-        date_para = doc.add_paragraph(f'Дата парсинга: {session["parse_time_display"]}')
+        if session and 'parse_time_display' in session:
+            date_str = session['parse_time_display']
+        else:
+            date_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        
+        date_para = doc.add_paragraph(f'Дата парсинга: {date_str}')
         date_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         date_para.runs[0].bold = True
         
@@ -796,8 +815,9 @@ class SteamParser:
             if i < len(profiles_data):
                 doc.add_paragraph("—" * 50)
         
-        # Сохраняем документ
-        filename = f"Steam_Report_{session['timestamp_str']}.docx"
+        # Создаем имя файла с текущей датой
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"Steam_Report_{timestamp}.docx"
         filepath = WORD_REPORTS_DIR / filename
         doc.save(filepath)
         print(f"✅ Word отчет сохранен: {filepath}")
