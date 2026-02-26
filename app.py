@@ -126,7 +126,7 @@ class DatabaseManager:
         CREATE TABLE IF NOT EXISTS parse_sessions (
             id SERIAL PRIMARY KEY,
             parse_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            parse_date DATE GENERATED ALWAYS AS (parse_time::DATE) STORED,
+            parse_date DATE,
             parse_time_display VARCHAR(50),
             timestamp_str VARCHAR(20),
             total_profiles INTEGER DEFAULT 0,
@@ -159,7 +159,7 @@ class DatabaseManager:
             games_count INTEGER DEFAULT 0,
             library_value DECIMAL(10, 2) DEFAULT 0,
             inventory_value DECIMAL(10, 2) DEFAULT 0,
-            total_value DECIMAL(10, 2) GENERATED ALWAYS AS (library_value + inventory_value) STORED,
+            total_value DECIMAL(10, 2) DEFAULT 0,
             parsed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             status VARCHAR(20) DEFAULT 'success',
             error_message TEXT,
@@ -197,7 +197,8 @@ class DatabaseManager:
             EXECUTE FUNCTION update_updated_at_column();
 
         -- Представление для удобной агрегации
-        CREATE OR REPLACE VIEW session_summary AS
+        DROP VIEW IF EXISTS session_summary;
+        CREATE VIEW session_summary AS
         SELECT 
             ps.id as session_id,
             ps.parse_time,
@@ -209,10 +210,10 @@ class DatabaseManager:
             ps.status,
             COUNT(DISTINCT p.country) as countries_count,
             COALESCE(SUM(psnap.games_count), 0) as total_games,
-            COALESCE(AVG(psnap.steam_level)::NUMERIC(10,2), 0) as avg_level,
+            COALESCE(AVG(psnap.steam_level), 0)::NUMERIC(10,2) as avg_level,
             COALESCE(SUM(psnap.library_value), 0) as total_library_value,
             COALESCE(SUM(psnap.inventory_value), 0) as total_inventory_value,
-            COALESCE(SUM(psnap.total_value), 0) as grand_total_value
+            COALESCE(SUM(psnap.library_value + psnap.inventory_value), 0) as grand_total_value
         FROM parse_sessions ps
         LEFT JOIN profile_snapshots psnap ON ps.id = psnap.session_id
         LEFT JOIN profiles p ON psnap.profile_id = p.id
@@ -226,6 +227,7 @@ class DatabaseManager:
             print("✅ Таблицы успешно созданы")
         except Exception as e:
             print(f"❌ Ошибка при создании таблиц: {e}")
+            # Не вызываем исключение, чтобы приложение продолжило работу
     
     def create_parse_session(self, parse_time=None):
         """Создает новую сессию парсинга"""
