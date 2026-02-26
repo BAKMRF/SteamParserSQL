@@ -25,15 +25,15 @@ load_dotenv()
 
 # Настройки PostgreSQL
 DB_CONFIG = {
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'port': os.getenv('DB_PORT', '5432'),
+    'host': os.getenv('DB_HOST', '127.0.0.1'),
+    'port': os.getenv('DB_PORT', '5433'),
     'database': os.getenv('DB_NAME', 'steam_parser'),
     'user': os.getenv('DB_USER', 'steam_user'),
     'password': os.getenv('DB_PASSWORD', 'steam_password')
 }
 
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", "")
-DEMO_MODE = False  # ВСЕГДА РЕАЛЬНЫЙ РЕЖИМ!
+DEMO_MODE = False
 
 STEAM_ACCOUNTS = [
     'https://steamcommunity.com/profiles/76561199001022272',
@@ -56,8 +56,9 @@ WORD_REPORTS_DIR.mkdir(exist_ok=True)
 # ==================== КЛАСС ДЛЯ РАБОТЫ С БД ====================
 
 class DatabaseManager:
-    def __init__(self, config):
+    def __init__(self, config, silent=False):
         self.config = config
+        self.silent = silent
         self._init_db()
     
     @contextmanager
@@ -68,7 +69,8 @@ class DatabaseManager:
             conn = psycopg2.connect(**self.config)
             yield conn
         except Exception as e:
-            print(f"❌ Ошибка подключения к БД: {e}")
+            if not self.silent:
+                print(f"❌ Ошибка подключения к БД: {e}")
             raise
         finally:
             if conn:
@@ -84,7 +86,8 @@ class DatabaseManager:
                 conn.commit()
             except Exception as e:
                 conn.rollback()
-                print(f"❌ Ошибка выполнения запроса: {e}")
+                if not self.silent:
+                    print(f"❌ Ошибка выполнения запроса: {e}")
                 raise
             finally:
                 cursor.close()
@@ -103,38 +106,30 @@ class DatabaseManager:
                 tables_exist = cursor.fetchone()['exists']
                 
                 if not tables_exist:
-                    print("🔄 Создание таблиц в базе данных...")
+                    if not self.silent:
+                        print("🔄 Создание таблиц в базе данных...")
                     self._create_tables()
                 else:
-                    print("✅ Подключение к PostgreSQL установлено")
+                    if not self.silent:
+                        print("✅ Подключение к PostgreSQL установлено")
                     
         except Exception as e:
-            print(f"❌ Ошибка подключения к PostgreSQL: {e}")
-            print("Убедитесь, что Docker контейнер запущен: docker-compose up -d")
+            if not self.silent:
+                print(f"❌ Ошибка подключения к PostgreSQL: {e}")
     
     def _create_tables(self):
         """Создает таблицы в базе данных"""
         create_tables_sql = """
-        -- Создание enum типов
-        DO $$ BEGIN
-            CREATE TYPE parse_status AS ENUM ('success', 'failed', 'pending');
-        EXCEPTION
-            WHEN duplicate_object THEN null;
-        END $$;
-
         -- Таблица для сессий парсинга
         CREATE TABLE IF NOT EXISTS parse_sessions (
             id SERIAL PRIMARY KEY,
             parse_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            parse_date DATE,
             parse_time_display VARCHAR(50),
             timestamp_str VARCHAR(20),
             total_profiles INTEGER DEFAULT 0,
             successful_profiles INTEGER DEFAULT 0,
             failed_profiles INTEGER DEFAULT 0,
-            status VARCHAR(20) DEFAULT 'pending',
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            status VARCHAR(20) DEFAULT 'pending'
         );
 
         -- Таблица для профилей
@@ -167,42 +162,19 @@ class DatabaseManager:
         );
 
         -- Создание индексов
-        CREATE INDEX IF NOT EXISTS idx_parse_sessions_parse_date ON parse_sessions(parse_date);
         CREATE INDEX IF NOT EXISTS idx_parse_sessions_parse_time ON parse_sessions(parse_time);
         CREATE INDEX IF NOT EXISTS idx_profile_snapshots_session_id ON profile_snapshots(session_id);
         CREATE INDEX IF NOT EXISTS idx_profile_snapshots_profile_id ON profile_snapshots(profile_id);
         CREATE INDEX IF NOT EXISTS idx_profiles_steam_id ON profiles(steam_id);
         CREATE INDEX IF NOT EXISTS idx_profiles_last_updated ON profiles(last_updated);
 
-        -- Функция для обновления updated_at
-        CREATE OR REPLACE FUNCTION update_updated_at_column()
-        RETURNS TRIGGER AS $$
-        BEGIN
-            NEW.updated_at = CURRENT_TIMESTAMP;
-            RETURN NEW;
-        END;
-        $$ language 'plpgsql';
-
-        -- Триггеры
-        DROP TRIGGER IF EXISTS update_parse_sessions_updated_at ON parse_sessions;
-        CREATE TRIGGER update_parse_sessions_updated_at 
-            BEFORE UPDATE ON parse_sessions 
-            FOR EACH ROW 
-            EXECUTE FUNCTION update_updated_at_column();
-
-        DROP TRIGGER IF EXISTS update_profiles_updated_at ON profiles;
-        CREATE TRIGGER update_profiles_updated_at 
-            BEFORE UPDATE ON profiles 
-            FOR EACH ROW 
-            EXECUTE FUNCTION update_updated_at_column();
-
         -- Представление для удобной агрегации
-        DROP VIEW IF EXISTS session_summary;
+        DROP VIEW IF EXISTS session_summary CASCADE;
         CREATE VIEW session_summary AS
         SELECT 
             ps.id as session_id,
             ps.parse_time,
-            ps.parse_date,
+            ps.parse_time::DATE as parse_date,
             ps.parse_time_display,
             ps.total_profiles,
             ps.successful_profiles,
@@ -217,17 +189,18 @@ class DatabaseManager:
         FROM parse_sessions ps
         LEFT JOIN profile_snapshots psnap ON ps.id = psnap.session_id
         LEFT JOIN profiles p ON psnap.profile_id = p.id
-        GROUP BY ps.id, ps.parse_time, ps.parse_date, ps.parse_time_display, 
+        GROUP BY ps.id, ps.parse_time, ps.parse_time_display, 
                  ps.total_profiles, ps.successful_profiles, ps.failed_profiles, ps.status;
         """
         
         try:
             with self.get_cursor() as cursor:
                 cursor.execute(create_tables_sql)
-            print("✅ Таблицы успешно созданы")
+            if not self.silent:
+                print("✅ Таблицы успешно созданы")
         except Exception as e:
-            print(f"❌ Ошибка при создании таблиц: {e}")
-            # Не вызываем исключение, чтобы приложение продолжило работу
+            if not self.silent:
+                print(f"❌ Ошибка при создании таблиц: {e}")
     
     def create_parse_session(self, parse_time=None):
         """Создает новую сессию парсинга"""
@@ -355,21 +328,7 @@ class DatabaseManager:
             cursor.execute("""
                 SELECT * FROM session_summary WHERE session_id = %s
             """, (session_id,))
-            result = cursor.fetchone()
-            
-            # Добавляем timestamp_str если его нет
-            if result and 'parse_time' in result:
-                parse_time = result['parse_time']
-                if isinstance(parse_time, datetime):
-                    result['timestamp_str'] = parse_time.strftime("%Y%m%d_%H%M%S")
-                elif parse_time:
-                    try:
-                        dt = datetime.fromisoformat(str(parse_time))
-                        result['timestamp_str'] = dt.strftime("%Y%m%d_%H%M%S")
-                    except:
-                        result['timestamp_str'] = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            return result
+            return cursor.fetchone()
     
     def get_session_profiles(self, session_id):
         """Получает все профили для конкретной сессии"""
@@ -430,14 +389,16 @@ class DatabaseManager:
 # ==================== КЛАСС ПАРСЕРА ====================
 
 class SteamParser:
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, silent=False):
         self.api_key = STEAM_API_KEY
         self.demo_mode = DEMO_MODE
         self.db = db_manager
+        self.silent = silent
         
-        print(f"🔧 Инициализация парсера:")
-        print(f"   Режим: {'ДЕМО' if self.demo_mode else 'РЕАЛЬНЫЙ'}")
-        print(f"   API ключ: {'ЕСТЬ' if self.api_key else 'НЕТ'}")
+        if not silent:
+            print(f"🔧 Инициализация парсера:")
+            print(f"   Режим: {'ДЕМО' if self.demo_mode else 'РЕАЛЬНЫЙ'}")
+            print(f"   API ключ: {'ЕСТЬ' if self.api_key else 'НЕТ'}")
         
     def extract_steam_id(self, input_str: str) -> str:
         """Извлекает SteamID из разных форматов"""
@@ -474,7 +435,6 @@ class SteamParser:
     def get_player_info(self, steam_id: str) -> dict:
         """Получает информацию об игроке через Steam API"""
         if not self.api_key:
-            print(f"❌ Нет API ключа! Используем заглушку для {steam_id}")
             return {
                 'personaname': f'User_{steam_id[-8:]}',
                 'loccountrycode': 'RU',
@@ -484,7 +444,8 @@ class SteamParser:
             }
         
         try:
-            print(f"🌐 Запрос реальных данных для {steam_id}")
+            if not self.silent:
+                print(f"🌐 Запрос реальных данных для {steam_id}")
             url = "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/"
             params = {'key': self.api_key, 'steamids': steam_id}
             
@@ -495,15 +456,19 @@ class SteamParser:
                 
                 if data['response']['players']:
                     player = data['response']['players'][0]
-                    print(f"✅ Получены реальные данные для {steam_id}: {player.get('personaname', 'Unknown')}")
+                    if not self.silent:
+                        print(f"✅ Получены реальные данные для {steam_id}: {player.get('personaname', 'Unknown')}")
                     return player
                 else:
-                    print(f"⚠️  Нет данных об игроке {steam_id}")
+                    if not self.silent:
+                        print(f"⚠️  Нет данных об игроке {steam_id}")
             else:
-                print(f"❌ Ошибка HTTP {response.status_code} для {steam_id}")
+                if not self.silent:
+                    print(f"❌ Ошибка HTTP {response.status_code} для {steam_id}")
                 
         except Exception as e:
-            print(f"❌ Ошибка API для {steam_id}: {str(e)}")
+            if not self.silent:
+                print(f"❌ Ошибка API для {steam_id}: {str(e)}")
         
         return {
             'personaname': f'User_{steam_id[-8:]}',
@@ -528,7 +493,8 @@ class SteamParser:
             if 'response' in data and 'player_level' in data['response']:
                 return data['response']['player_level']
         except Exception as e:
-            print(f"Не удалось получить уровень для {steam_id}: {str(e)}")
+            if not self.silent:
+                print(f"Не удалось получить уровень для {steam_id}: {str(e)}")
         
         return 10
     
@@ -552,7 +518,8 @@ class SteamParser:
             if 'response' in data:
                 return data['response']
         except Exception as e:
-            print(f"Не удалось получить игры для {steam_id}: {str(e)}")
+            if not self.silent:
+                print(f"Не удалось получить игры для {steam_id}: {str(e)}")
         
         return {'game_count': 0, 'games': []}
     
@@ -579,7 +546,8 @@ class SteamParser:
             return len(games) * 10.0
             
         except Exception as e:
-            print(f"Не удалось рассчитать стоимость библиотеки: {str(e)}")
+            if not self.silent:
+                print(f"Не удалось рассчитать стоимость библиотеки: {str(e)}")
         
         return 0
     
@@ -601,13 +569,15 @@ class SteamParser:
                     return item_count * 5.0
                     
         except Exception as e:
-            print(f"Не удалось получить инвентарь: {str(e)}")
+            if not self.silent:
+                print(f"Не удалось получить инвентарь: {str(e)}")
         
         return 0
     
     def parse_account(self, account_input: str) -> dict:
         """Основная функция парсинга аккаунта"""
-        print(f"\n🔍 Парсинг аккаунта: {account_input[:50]}...")
+        if not self.silent:
+            print(f"\n🔍 Парсинг аккаунта: {account_input[:50]}...")
         
         result = {
             'input': account_input,
@@ -618,7 +588,8 @@ class SteamParser:
         
         try:
             steam_id = self.extract_steam_id(account_input)
-            print(f"   SteamID: {steam_id}")
+            if not self.silent:
+                print(f"   SteamID: {steam_id}")
             
             if not steam_id:
                 result['error'] = "Не удалось извлечь SteamID"
@@ -648,30 +619,35 @@ class SteamParser:
             }
             
             result['success'] = True
-            print(f"   ✅ Успешно: {result['data']['nickname']}")
+            if not self.silent:
+                print(f"   ✅ Успешно: {result['data']['nickname']}")
             
         except Exception as e:
             result['error'] = str(e)
-            print(f"   ❌ Ошибка: {str(e)}")
+            if not self.silent:
+                print(f"   ❌ Ошибка: {str(e)}")
         
         return result
     
     def parse_all_accounts(self):
         """Парсит все аккаунты и сохраняет в БД"""
-        print("\n🚀 Начало парсинга всех аккаунтов")
+        if not self.silent:
+            print("\n🚀 Начало парсинга всех аккаунтов")
         
         # Создаем сессию парсинга
         session_id = self.db.create_parse_session()
         
         if not session_id:
-            print("❌ Не удалось создать сессию парсинга")
+            if not self.silent:
+                print("❌ Не удалось создать сессию парсинга")
             return None, None, []
         
         successful_profiles = []
         failed_profiles = []
         
         for i, account in enumerate(STEAM_ACCOUNTS):
-            print(f"\n📊 Аккаунт {i+1}/{len(STEAM_ACCOUNTS)}")
+            if not self.silent:
+                print(f"\n📊 Аккаунт {i+1}/{len(STEAM_ACCOUNTS)}")
             result = self.parse_account(account)
             
             if result['success']:
@@ -689,19 +665,22 @@ class SteamParser:
                         result['data']
                     )
                     successful_profiles.append(result['data'])
-                    print(f"   ✅ {result['data']['nickname']}")
+                    if not self.silent:
+                        print(f"   ✅ {result['data']['nickname']}")
                 else:
                     failed_profiles.append({
                         'account': account,
                         'error': 'Не удалось сохранить профиль в БД'
                     })
-                    print(f"   ❌ Ошибка сохранения в БД")
+                    if not self.silent:
+                        print(f"   ❌ Ошибка сохранения в БД")
             else:
                 failed_profiles.append({
                     'account': account,
                     'error': result.get('error', 'Неизвестная ошибка')
                 })
-                print(f"   ❌ {result.get('error', 'Ошибка')}")
+                if not self.silent:
+                    print(f"   ❌ {result.get('error', 'Ошибка')}")
             
             time.sleep(1)  # Задержка между запросами
         
@@ -820,7 +799,8 @@ class SteamParser:
         filename = f"Steam_Report_{timestamp}.docx"
         filepath = WORD_REPORTS_DIR / filename
         doc.save(filepath)
-        print(f"✅ Word отчет сохранен: {filepath}")
+        if not self.silent:
+            print(f"✅ Word отчет сохранен: {filepath}")
 
 # ==================== ФУНКЦИИ ДЛЯ STREAMLIT ====================
 
@@ -837,9 +817,9 @@ def main():
     
     st.title("🎮 Steam Account Parser with PostgreSQL")
     
-    # Инициализация сервисов
-    db = DatabaseManager(DB_CONFIG)
-    parser = SteamParser(db)
+    # Инициализация сервисов (с silent=True, чтобы убрать лишние сообщения)
+    db = DatabaseManager(DB_CONFIG, silent=True)
+    parser = SteamParser(db, silent=True)
     
     # Боковая панель
     with st.sidebar:
@@ -871,44 +851,50 @@ def main():
         # История сессий
         st.header("📅 История парсинга")
         
-        sessions = db.get_sessions(limit=50)
-        
-        if sessions:
-            st.success(f"📊 Всего сессий: {len(sessions)}")
+        try:
+            sessions = db.get_sessions(limit=50)
             
-            # Создаем словарь для выбора
-            session_options = {}
-            for s in sessions:
-                label = f"{s['parse_time_display']} | ✅ {s['successful_profiles']}/{s['total_profiles']} | 💰 ${float(s['grand_total_value']):,.0f}"
-                session_options[label] = s['session_id']
-            
-            selected_label = st.selectbox(
-                "Выберите сессию для просмотра:",
-                list(session_options.keys())
-            )
-            
-            if st.button("📖 Показать выбранную сессию", use_container_width=True):
-                st.session_state.selected_session_id = session_options[selected_label]
-                st.rerun()
-            
-            # Кнопка для просмотра всех сессий
-            if st.button("📊 Показать все сессии", use_container_width=True):
-                st.session_state.show_all_sessions = True
-                st.rerun()
-        else:
-            st.info("📭 Сессий пока нет")
+            if sessions:
+                st.success(f"📊 Всего сессий: {len(sessions)}")
+                
+                # Создаем словарь для выбора
+                session_options = {}
+                for s in sessions:
+                    label = f"{s['parse_time_display']} | ✅ {s['successful_profiles']}/{s['total_profiles']} | 💰 ${float(s['grand_total_value']):,.0f}"
+                    session_options[label] = s['session_id']
+                
+                selected_label = st.selectbox(
+                    "Выберите сессию для просмотра:",
+                    list(session_options.keys())
+                )
+                
+                if st.button("📖 Показать выбранную сессию", use_container_width=True):
+                    st.session_state.selected_session_id = session_options[selected_label]
+                    st.rerun()
+                
+                # Кнопка для просмотра всех сессий
+                if st.button("📊 Показать все сессии", use_container_width=True):
+                    st.session_state.show_all_sessions = True
+                    st.rerun()
+            else:
+                st.info("📭 Сессий пока нет")
+        except Exception as e:
+            st.error(f"Ошибка при загрузке сессий: {e}")
         
         st.divider()
         
         # Общая статистика БД
-        stats = db.get_stats()
-        if stats:
-            st.header("💾 Статистика БД")
-            st.metric("Всего профилей", stats['total_profiles'])
-            st.metric("Всего сессий", stats['total_sessions'])
-            st.metric("Всего снимков", stats['total_snapshots'])
-            if stats['total_value']:
-                st.metric("Общая стоимость", format_currency(stats['total_value']))
+        try:
+            stats = db.get_stats()
+            if stats:
+                st.header("💾 Статистика БД")
+                st.metric("Всего профилей", stats['total_profiles'])
+                st.metric("Всего сессий", stats['total_sessions'])
+                st.metric("Всего снимков", stats['total_snapshots'])
+                if stats['total_value']:
+                    st.metric("Общая стоимость", format_currency(stats['total_value']))
+        except:
+            pass
     
     # Основная область
     if 'selected_session_id' in st.session_state:
@@ -967,7 +953,8 @@ def main():
                         title="Стоимость библиотеки и инвентаря по аккаунтам",
                         xaxis_title="Аккаунт",
                         yaxis_title="Стоимость ($)",
-                        barmode='group'
+                        barmode='group',
+                        height=500
                     )
                     
                     st.plotly_chart(fig, use_container_width=True)
@@ -978,7 +965,8 @@ def main():
                         x=[p['nickname'] for p in profiles],
                         y=[p['games_count'] for p in profiles],
                         title="Количество игр в библиотеке",
-                        labels={'x': 'Аккаунт', 'y': 'Количество игр'}
+                        labels={'x': 'Аккаунт', 'y': 'Количество игр'},
+                        height=500
                     )
                     st.plotly_chart(fig, use_container_width=True)
                 
@@ -992,7 +980,8 @@ def main():
                     fig = px.pie(
                         values=list(country_counts.values()),
                         names=list(country_counts.keys()),
-                        title="Распределение по странам"
+                        title="Распределение по странам",
+                        height=500
                     )
                     st.plotly_chart(fig, use_container_width=True)
                 
@@ -1029,6 +1018,8 @@ def main():
                     if 'selected_profile_id' in st.session_state:
                         del st.session_state.selected_profile_id
                     st.rerun()
+            else:
+                st.warning("В этой сессии нет профилей")
         
         # Показываем историю профиля если выбрана
         if 'selected_profile_id' in st.session_state:
@@ -1042,15 +1033,29 @@ def main():
                 df = pd.DataFrame(history)
                 df['parse_time'] = pd.to_datetime(df['parse_time'])
                 
-                # График изменения уровня
-                fig = px.line(
-                    df, 
-                    x='parse_time', 
-                    y='steam_level',
-                    title="Изменение уровня Steam",
-                    labels={'parse_time': 'Дата', 'steam_level': 'Уровень'}
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # График изменения уровня
+                    fig = px.line(
+                        df, 
+                        x='parse_time', 
+                        y='steam_level',
+                        title="Изменение уровня Steam",
+                        labels={'parse_time': 'Дата', 'steam_level': 'Уровень'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    # График изменения количества игр
+                    fig = px.line(
+                        df, 
+                        x='parse_time', 
+                        y='games_count',
+                        title="Изменение количества игр",
+                        labels={'parse_time': 'Дата', 'games_count': 'Количество игр'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
                 
                 # График изменения стоимости
                 fig = px.line(
@@ -1088,8 +1093,8 @@ def main():
             display_df.columns = ['Время парсинга', 'Всего', 'Успешно', 'Ошибок',
                                 'Всего игр', 'Ср. уровень', 'Общая стоимость']
             
-            display_df['Общая стоимость'] = display_df['Общая стоимость'].apply(format_currency)
-            display_df['Ср. уровень'] = display_df['Ср. уровень'].apply(lambda x: f"{float(x):.1f}")
+            display_df['Общая стоимость'] = display_df['grand_total_value'].apply(format_currency)
+            display_df['Ср. уровень'] = display_df['avg_level'].apply(lambda x: f"{float(x):.1f}")
             
             st.dataframe(display_df, use_container_width=True)
             
@@ -1128,15 +1133,18 @@ def main():
         with col2:
             # Последние сессии
             st.subheader("🕒 Последние сессии")
-            sessions = db.get_sessions(limit=5)
-            
-            if sessions:
-                for s in sessions:
-                    st.write(f"📅 {s['parse_time_display']}")
-                    st.write(f"   ✅ {s['successful_profiles']}/{s['total_profiles']} | 💰 {format_currency(s['grand_total_value'])}")
-                    st.divider()
-            else:
-                st.write("Нет данных. Запустите парсинг!")
+            try:
+                sessions = db.get_sessions(limit=5)
+                
+                if sessions:
+                    for s in sessions:
+                        st.write(f"📅 {s['parse_time_display']}")
+                        st.write(f"   ✅ {s['successful_profiles']}/{s['total_profiles']} | 💰 {format_currency(s['grand_total_value'])}")
+                        st.divider()
+                else:
+                    st.write("Нет данных. Запустите парсинг!")
+            except:
+                st.write("Ошибка загрузки данных")
         
         # Статус подключения
         st.divider()
@@ -1166,8 +1174,8 @@ def run_auto_parse():
     print(f"Время запуска: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
     print("=" * 50)
     
-    db = DatabaseManager(DB_CONFIG)
-    parser = SteamParser(db)
+    db = DatabaseManager(DB_CONFIG, silent=False)
+    parser = SteamParser(db, silent=False)
     
     session_id, successful, failed = parser.parse_all_accounts()
     
