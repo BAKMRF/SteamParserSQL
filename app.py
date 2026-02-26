@@ -5,7 +5,6 @@ import os
 import re
 import time
 from datetime import datetime, timedelta
-import base64
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
@@ -14,11 +13,9 @@ from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 import json
-import schedule
-import threading
 from pathlib import Path
 import psycopg2
-from psycopg2.extras import RealDictCursor, Json
+from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from dotenv import load_dotenv
 
@@ -36,7 +33,7 @@ DB_CONFIG = {
 }
 
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", "")
-DEMO_MODE = False
+DEMO_MODE = False  # ВСЕГДА РЕАЛЬНЫЙ РЕЖИМ!
 
 STEAM_ACCOUNTS = [
     'https://steamcommunity.com/profiles/76561199001022272',
@@ -52,6 +49,7 @@ BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 WORD_REPORTS_DIR = DATA_DIR / "word_reports"
 
+# Создаем директории если их нет
 DATA_DIR.mkdir(exist_ok=True)
 WORD_REPORTS_DIR.mkdir(exist_ok=True)
 
@@ -70,7 +68,7 @@ class DatabaseManager:
             conn = psycopg2.connect(**self.config)
             yield conn
         except Exception as e:
-            print(f"Ошибка подключения к БД: {e}")
+            print(f"❌ Ошибка подключения к БД: {e}")
             raise
         finally:
             if conn:
@@ -84,22 +82,150 @@ class DatabaseManager:
             try:
                 yield cursor
                 conn.commit()
-            except Exception:
+            except Exception as e:
                 conn.rollback()
+                print(f"❌ Ошибка выполнения запроса: {e}")
                 raise
             finally:
                 cursor.close()
     
     def _init_db(self):
-        """Проверка подключения к БД"""
+        """Проверка подключения к БД и создание таблиц если их нет"""
         try:
             with self.get_cursor() as cursor:
-                cursor.execute("SELECT 1")
-                print("✅ Подключение к PostgreSQL установлено")
+                # Проверяем существование таблиц
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'parse_sessions'
+                    );
+                """)
+                tables_exist = cursor.fetchone()['exists']
+                
+                if not tables_exist:
+                    print("🔄 Создание таблиц в базе данных...")
+                    self._create_tables()
+                else:
+                    print("✅ Подключение к PostgreSQL установлено")
+                    
         except Exception as e:
             print(f"❌ Ошибка подключения к PostgreSQL: {e}")
-            print("Убедитесь, что Docker контейнер запущен:")
-            print("  docker-compose up -d")
+            print("Убедитесь, что Docker контейнер запущен: docker-compose up -d")
+    
+    def _create_tables(self):
+        """Создает таблицы в базе данных"""
+        create_tables_sql = """
+        -- Создание enum типов
+        DO $$ BEGIN
+            CREATE TYPE parse_status AS ENUM ('success', 'failed', 'pending');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+
+        -- Таблица для сессий парсинга
+        CREATE TABLE IF NOT EXISTS parse_sessions (
+            id SERIAL PRIMARY KEY,
+            parse_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            parse_date DATE GENERATED ALWAYS AS (parse_time::DATE) STORED,
+            parse_time_display VARCHAR(50),
+            timestamp_str VARCHAR(20),
+            total_profiles INTEGER DEFAULT 0,
+            successful_profiles INTEGER DEFAULT 0,
+            failed_profiles INTEGER DEFAULT 0,
+            status VARCHAR(20) DEFAULT 'pending',
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- Таблица для профилей
+        CREATE TABLE IF NOT EXISTS profiles (
+            id SERIAL PRIMARY KEY,
+            steam_id VARCHAR(50) UNIQUE NOT NULL,
+            nickname VARCHAR(255),
+            country VARCHAR(10),
+            avatar_url TEXT,
+            steam_level INTEGER DEFAULT 0,
+            profile_url TEXT,
+            first_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- Таблица для данных парсинга
+        CREATE TABLE IF NOT EXISTS profile_snapshots (
+            id SERIAL PRIMARY KEY,
+            session_id INTEGER REFERENCES parse_sessions(id) ON DELETE CASCADE,
+            profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE,
+            steam_level INTEGER DEFAULT 0,
+            games_count INTEGER DEFAULT 0,
+            library_value DECIMAL(10, 2) DEFAULT 0,
+            inventory_value DECIMAL(10, 2) DEFAULT 0,
+            total_value DECIMAL(10, 2) GENERATED ALWAYS AS (library_value + inventory_value) STORED,
+            parsed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            status VARCHAR(20) DEFAULT 'success',
+            error_message TEXT,
+            UNIQUE(session_id, profile_id)
+        );
+
+        -- Создание индексов
+        CREATE INDEX IF NOT EXISTS idx_parse_sessions_parse_date ON parse_sessions(parse_date);
+        CREATE INDEX IF NOT EXISTS idx_parse_sessions_parse_time ON parse_sessions(parse_time);
+        CREATE INDEX IF NOT EXISTS idx_profile_snapshots_session_id ON profile_snapshots(session_id);
+        CREATE INDEX IF NOT EXISTS idx_profile_snapshots_profile_id ON profile_snapshots(profile_id);
+        CREATE INDEX IF NOT EXISTS idx_profiles_steam_id ON profiles(steam_id);
+        CREATE INDEX IF NOT EXISTS idx_profiles_last_updated ON profiles(last_updated);
+
+        -- Функция для обновления updated_at
+        CREATE OR REPLACE FUNCTION update_updated_at_column()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            NEW.updated_at = CURRENT_TIMESTAMP;
+            RETURN NEW;
+        END;
+        $$ language 'plpgsql';
+
+        -- Триггеры
+        DROP TRIGGER IF EXISTS update_parse_sessions_updated_at ON parse_sessions;
+        CREATE TRIGGER update_parse_sessions_updated_at 
+            BEFORE UPDATE ON parse_sessions 
+            FOR EACH ROW 
+            EXECUTE FUNCTION update_updated_at_column();
+
+        DROP TRIGGER IF EXISTS update_profiles_updated_at ON profiles;
+        CREATE TRIGGER update_profiles_updated_at 
+            BEFORE UPDATE ON profiles 
+            FOR EACH ROW 
+            EXECUTE FUNCTION update_updated_at_column();
+
+        -- Представление для удобной агрегации
+        CREATE OR REPLACE VIEW session_summary AS
+        SELECT 
+            ps.id as session_id,
+            ps.parse_time,
+            ps.parse_date,
+            ps.parse_time_display,
+            ps.total_profiles,
+            ps.successful_profiles,
+            ps.failed_profiles,
+            ps.status,
+            COUNT(DISTINCT p.country) as countries_count,
+            COALESCE(SUM(psnap.games_count), 0) as total_games,
+            COALESCE(AVG(psnap.steam_level)::NUMERIC(10,2), 0) as avg_level,
+            COALESCE(SUM(psnap.library_value), 0) as total_library_value,
+            COALESCE(SUM(psnap.inventory_value), 0) as total_inventory_value,
+            COALESCE(SUM(psnap.total_value), 0) as grand_total_value
+        FROM parse_sessions ps
+        LEFT JOIN profile_snapshots psnap ON ps.id = psnap.session_id
+        LEFT JOIN profiles p ON psnap.profile_id = p.id
+        GROUP BY ps.id, ps.parse_time, ps.parse_date, ps.parse_time_display, 
+                 ps.total_profiles, ps.successful_profiles, ps.failed_profiles, ps.status;
+        """
+        
+        try:
+            with self.get_cursor() as cursor:
+                cursor.execute(create_tables_sql)
+            print("✅ Таблицы успешно созданы")
+        except Exception as e:
+            print(f"❌ Ошибка при создании таблиц: {e}")
     
     def create_parse_session(self, parse_time=None):
         """Создает новую сессию парсинга"""
@@ -270,8 +396,22 @@ class DatabaseManager:
         """Удаляет сессию и связанные данные"""
         with self.get_cursor() as cursor:
             cursor.execute("DELETE FROM parse_sessions WHERE id = %s", (session_id,))
+    
+    def get_stats(self):
+        """Получает общую статистику по БД"""
+        with self.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    (SELECT COUNT(*) FROM profiles) as total_profiles,
+                    (SELECT COUNT(*) FROM parse_sessions) as total_sessions,
+                    (SELECT COUNT(*) FROM profile_snapshots) as total_snapshots,
+                    (SELECT MAX(parse_time) FROM parse_sessions) as last_parse,
+                    (SELECT SUM(games_count) FROM profile_snapshots) as total_games,
+                    (SELECT SUM(total_value) FROM profile_snapshots) as total_value
+            """)
+            return cursor.fetchone()
 
-# ==================== КЛАСС ПАРСЕРА (обновленный) ====================
+# ==================== КЛАСС ПАРСЕРА ====================
 
 class SteamParser:
     def __init__(self, db_manager):
@@ -282,11 +422,223 @@ class SteamParser:
         print(f"🔧 Инициализация парсера:")
         print(f"   Режим: {'ДЕМО' if self.demo_mode else 'РЕАЛЬНЫЙ'}")
         print(f"   API ключ: {'ЕСТЬ' if self.api_key else 'НЕТ'}")
+        
+    def extract_steam_id(self, input_str: str) -> str:
+        """Извлекает SteamID из разных форматов"""
+        if re.match(r'^\d{17}$', input_str):
+            return input_str
+        
+        match = re.search(r'steamcommunity\.com/(?:profiles|id)/([a-zA-Z0-9_]+)', input_str)
+        if match:
+            if not match.group(1).isdigit():
+                return self._resolve_vanity_url(match.group(1))
+            return match.group(1)
+        
+        match = re.search(r'steamcommunity\.com/profiles/(\d{17})', input_str)
+        if match:
+            return match.group(1)
+        
+        return input_str
     
-    # ... (все методы extract_steam_id, _resolve_vanity_url, 
-    # get_player_info, get_steam_level, get_owned_games, 
-    # get_games_count, get_library_value, get_inventory_value 
-    # остаются без изменений) ...
+    def _resolve_vanity_url(self, vanity_name: str) -> str:
+        """Преобразует никнейм в SteamID"""
+        try:
+            url = "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/"
+            params = {'key': self.api_key, 'vanityurl': vanity_name}
+            
+            response = requests.get(url, params=params, timeout=10)
+            data = response.json()
+            
+            if data['response']['success'] == 1:
+                return data['response']['steamid']
+        except:
+            pass
+        return ""
+    
+    def get_player_info(self, steam_id: str) -> dict:
+        """Получает информацию об игроке через Steam API"""
+        if not self.api_key:
+            print(f"❌ Нет API ключа! Используем заглушку для {steam_id}")
+            return {
+                'personaname': f'User_{steam_id[-8:]}',
+                'loccountrycode': 'RU',
+                'avatarfull': '',
+                'profileurl': f'https://steamcommunity.com/profiles/{steam_id}',
+                'steamid': steam_id
+            }
+        
+        try:
+            print(f"🌐 Запрос реальных данных для {steam_id}")
+            url = "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/"
+            params = {'key': self.api_key, 'steamids': steam_id}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data['response']['players']:
+                    player = data['response']['players'][0]
+                    print(f"✅ Получены реальные данные для {steam_id}: {player.get('personaname', 'Unknown')}")
+                    return player
+                else:
+                    print(f"⚠️  Нет данных об игроке {steam_id}")
+            else:
+                print(f"❌ Ошибка HTTP {response.status_code} для {steam_id}")
+                
+        except Exception as e:
+            print(f"❌ Ошибка API для {steam_id}: {str(e)}")
+        
+        return {
+            'personaname': f'User_{steam_id[-8:]}',
+            'loccountrycode': 'Unknown',
+            'avatarfull': '',
+            'profileurl': f'https://steamcommunity.com/profiles/{steam_id}',
+            'steamid': steam_id
+        }
+    
+    def get_steam_level(self, steam_id: str) -> int:
+        """Получает уровень Steam аккаунта"""
+        if not self.api_key:
+            return 10
+        
+        try:
+            url = "https://api.steampowered.com/IPlayerService/GetSteamLevel/v1/"
+            params = {'key': self.api_key, 'steamid': steam_id}
+            
+            response = requests.get(url, params=params, timeout=10)
+            data = response.json()
+            
+            if 'response' in data and 'player_level' in data['response']:
+                return data['response']['player_level']
+        except Exception as e:
+            print(f"Не удалось получить уровень для {steam_id}: {str(e)}")
+        
+        return 10
+    
+    def get_owned_games(self, steam_id: str) -> dict:
+        """Получает список игр и их количество"""
+        if not self.api_key:
+            return {'game_count': 50, 'games': []}
+        
+        try:
+            url = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/"
+            params = {
+                'key': self.api_key, 
+                'steamid': steam_id, 
+                'include_appinfo': 1,
+                'include_played_free_games': 1
+            }
+            
+            response = requests.get(url, params=params, timeout=15)
+            data = response.json()
+            
+            if 'response' in data:
+                return data['response']
+        except Exception as e:
+            print(f"Не удалось получить игры для {steam_id}: {str(e)}")
+        
+        return {'game_count': 0, 'games': []}
+    
+    def get_games_count(self, steam_id: str) -> int:
+        """Получает количество игр"""
+        games_data = self.get_owned_games(steam_id)
+        return games_data.get('game_count', 0)
+    
+    def get_library_value(self, steam_id: str) -> float:
+        """Рассчитывает примерную стоимость библиотеки"""
+        if not self.api_key:
+            return 500.0
+        
+        try:
+            games_data = self.get_owned_games(steam_id)
+            
+            if not games_data or 'games' not in games_data:
+                return 0
+            
+            games = games_data['games']
+            if not games:
+                return 0
+            
+            return len(games) * 10.0
+            
+        except Exception as e:
+            print(f"Не удалось рассчитать стоимость библиотеки: {str(e)}")
+        
+        return 0
+    
+    def get_inventory_value(self, steam_id: str) -> float:
+        """Оценивает стоимость инвентаря"""
+        if not self.api_key:
+            return 100.0
+        
+        try:
+            url = f"https://steamcommunity.com/inventory/{steam_id}/730/2"
+            params = {'l': 'russian', 'count': 50}
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'assets' in data:
+                    item_count = len(data['assets'])
+                    return item_count * 5.0
+                    
+        except Exception as e:
+            print(f"Не удалось получить инвентарь: {str(e)}")
+        
+        return 0
+    
+    def parse_account(self, account_input: str) -> dict:
+        """Основная функция парсинга аккаунта"""
+        print(f"\n🔍 Парсинг аккаунта: {account_input[:50]}...")
+        
+        result = {
+            'input': account_input,
+            'success': False,
+            'error': None,
+            'data': {}
+        }
+        
+        try:
+            steam_id = self.extract_steam_id(account_input)
+            print(f"   SteamID: {steam_id}")
+            
+            if not steam_id:
+                result['error'] = "Не удалось извлечь SteamID"
+                return result
+            
+            player_info = self.get_player_info(steam_id)
+            if not player_info:
+                result['error'] = "Не удалось получить данные аккаунта"
+                return result
+            
+            steam_level = self.get_steam_level(steam_id)
+            games_count = self.get_games_count(steam_id)
+            library_value = self.get_library_value(steam_id)
+            inventory_value = self.get_inventory_value(steam_id)
+            
+            result['data'] = {
+                'steam_id': steam_id,
+                'nickname': player_info.get('personaname', 'Неизвестно'),
+                'country': player_info.get('loccountrycode', 'Неизвестно'),
+                'avatar': player_info.get('avatarfull', ''),
+                'steam_level': steam_level,
+                'games_count': games_count,
+                'library_value': round(library_value, 2),
+                'inventory_value': round(inventory_value, 2),
+                'profile_url': player_info.get('profileurl', f'https://steamcommunity.com/profiles/{steam_id}'),
+                'parsed_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            result['success'] = True
+            print(f"   ✅ Успешно: {result['data']['nickname']}")
+            
+        except Exception as e:
+            result['error'] = str(e)
+            print(f"   ❌ Ошибка: {str(e)}")
+        
+        return result
     
     def parse_all_accounts(self):
         """Парсит все аккаунты и сохраняет в БД"""
@@ -345,9 +697,114 @@ class SteamParser:
             len(failed_profiles)
         )
         
+        # Создаем Word отчет
+        if successful_profiles:
+            self._create_word_report(session_id, successful_profiles)
+        
         return session_id, successful_profiles, failed_profiles
+    
+    def _create_word_report(self, session_id, profiles_data):
+        """Создает Word документ с отчетом"""
+        doc = Document()
+        
+        # Получаем данные сессии
+        session = self.db.get_session_by_id(session_id)
+        
+        # Заголовок
+        title = doc.add_heading('Steam Accounts Report', 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # Дата и время
+        date_para = doc.add_paragraph(f'Дата парсинга: {session["parse_time_display"]}')
+        date_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        date_para.runs[0].bold = True
+        
+        doc.add_paragraph()
+        
+        # Сводная статистика
+        summary_heading = doc.add_heading('Сводная статистика', 1)
+        
+        total_profiles = len(profiles_data)
+        total_games = sum(p.get('games_count', 0) for p in profiles_data)
+        total_level = sum(p.get('steam_level', 0) for p in profiles_data)
+        avg_level = total_level / total_profiles if total_profiles > 0 else 0
+        total_value = sum(p.get('library_value', 0) + p.get('inventory_value', 0) for p in profiles_data)
+        
+        summary_table = doc.add_table(rows=5, cols=2)
+        summary_table.style = 'Light Grid Accent 1'
+        summary_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        
+        data = [
+            ("Количество аккаунтов", str(total_profiles)),
+            ("Всего игр в библиотеках", str(total_games)),
+            ("Средний уровень Steam", f"{avg_level:.1f}"),
+            ("Суммарный уровень", str(total_level)),
+            ("Общая стоимость", f"${total_value:,.2f}")
+        ]
+        
+        for i, (label, value) in enumerate(data):
+            summary_table.cell(i, 0).text = label
+            summary_table.cell(i, 1).text = value
+            summary_table.cell(i, 0).paragraphs[0].runs[0].bold = True
+        
+        doc.add_paragraph()
+        
+        # Детальная информация по каждому аккаунту
+        details_heading = doc.add_heading('Детальная информация по аккаунтам', 1)
+        
+        for i, profile in enumerate(profiles_data, 1):
+            account_heading = doc.add_heading(f'Аккаунт {i}: {profile.get("nickname", "Неизвестно")}', 2)
+            
+            # Основная информация
+            info_para = doc.add_paragraph()
+            info_para.add_run(f"SteamID: ").bold = True
+            info_para.add_run(f'{profile.get("steam_id", "N/A")}\n')
+            
+            info_para.add_run(f"Страна: ").bold = True
+            info_para.add_run(f'{profile.get("country", "Неизвестно")}\n')
+            
+            info_para.add_run(f"Уровень Steam: ").bold = True
+            info_para.add_run(f'{profile.get("steam_level", 0)}\n')
+            
+            info_para.add_run(f"Дата парсинга: ").bold = True
+            info_para.add_run(f'{profile.get("parsed_at", "N/A")}\n')
+            
+            # Статистика в таблице
+            stats_table = doc.add_table(rows=3, cols=2)
+            stats_table.style = 'Light Grid Accent 2'
+            
+            stats_data = [
+                ("Игр в библиотеке", str(profile.get('games_count', 0))),
+                ("Стоимость библиотеки", f"${profile.get('library_value', 0):,.2f}"),
+                ("Стоимость инвентаря", f"${profile.get('inventory_value', 0):,.2f}")
+            ]
+            
+            for row, (label, value) in enumerate(stats_data):
+                stats_table.cell(row, 0).text = label
+                stats_table.cell(row, 1).text = value
+                stats_table.cell(row, 0).paragraphs[0].runs[0].bold = True
+            
+            doc.add_paragraph()
+            
+            # Ссылка на профиль
+            link_para = doc.add_paragraph()
+            link_para.add_run("Ссылка на профиль: ").bold = True
+            link_para.add_run(f'{profile.get("profile_url", "")}')
+            
+            if i < len(profiles_data):
+                doc.add_paragraph("—" * 50)
+        
+        # Сохраняем документ
+        filename = f"Steam_Report_{session['timestamp_str']}.docx"
+        filepath = WORD_REPORTS_DIR / filename
+        doc.save(filepath)
+        print(f"✅ Word отчет сохранен: {filepath}")
 
-# ==================== ОБНОВЛЕННАЯ ФУНКЦИЯ MAIN ====================
+# ==================== ФУНКЦИИ ДЛЯ STREAMLIT ====================
+
+def format_currency(value):
+    """Форматирует валюту"""
+    return f"${float(value):,.2f}"
 
 def main():
     st.set_page_config(
@@ -381,7 +838,7 @@ def main():
                         for profile in successful:
                             st.write(f"✅ {profile['nickname']} (Уровень: {profile['steam_level']})")
                         for fail in failed:
-                            st.write(f"❌ {fail['account']}: {fail['error']}")
+                            st.write(f"❌ {fail['account'][:50]}...: {fail['error']}")
                     
                     st.info(f"ID сессии: {session_id}")
                 else:
@@ -400,7 +857,7 @@ def main():
             # Создаем словарь для выбора
             session_options = {}
             for s in sessions:
-                label = f"{s['parse_time_display']} | ✅ {s['successful_profiles']}/{s['total_profiles']} | 💰 ${s['grand_total_value']:,.0f}"
+                label = f"{s['parse_time_display']} | ✅ {s['successful_profiles']}/{s['total_profiles']} | 💰 ${float(s['grand_total_value']):,.0f}"
                 session_options[label] = s['session_id']
             
             selected_label = st.selectbox(
@@ -412,7 +869,7 @@ def main():
                 st.session_state.selected_session_id = session_options[selected_label]
                 st.rerun()
             
-            # Кнопка для просмотра всех сессий в таблице
+            # Кнопка для просмотра всех сессий
             if st.button("📊 Показать все сессии", use_container_width=True):
                 st.session_state.show_all_sessions = True
                 st.rerun()
@@ -421,21 +878,15 @@ def main():
         
         st.divider()
         
-        # Информация о БД
-        st.header("💾 База данных")
-        st.code(f"""
-Хост: {DB_CONFIG['host']}
-Порт: {DB_CONFIG['port']}
-БД: {DB_CONFIG['database']}
-Пользователь: {DB_CONFIG['user']}
-        """)
-        
-        st.info("""
-        **PgAdmin доступен:**
-        http://localhost:5050
-        Email: admin@steam.com
-        Пароль: admin
-        """)
+        # Общая статистика БД
+        stats = db.get_stats()
+        if stats:
+            st.header("💾 Статистика БД")
+            st.metric("Всего профилей", stats['total_profiles'])
+            st.metric("Всего сессий", stats['total_sessions'])
+            st.metric("Всего снимков", stats['total_snapshots'])
+            if stats['total_value']:
+                st.metric("Общая стоимость", format_currency(stats['total_value']))
     
     # Основная область
     if 'selected_session_id' in st.session_state:
@@ -455,9 +906,9 @@ def main():
             with col3:
                 st.metric("Всего игр", session_data['total_games'] or 0)
             with col4:
-                st.metric("Средний уровень", f"{session_data['avg_level']:.1f}")
+                st.metric("Средний уровень", f"{float(session_data['avg_level']):.1f}")
             with col5:
-                st.metric("Общая стоимость", f"${session_data['grand_total_value']:,.2f}")
+                st.metric("Общая стоимость", format_currency(session_data['grand_total_value']))
             
             # Получаем профили сессии
             profiles = db.get_session_profiles(session_id)
@@ -539,9 +990,9 @@ def main():
                             st.write(f"**Страна:** {profile['country'] or 'Неизвестно'}")
                             st.write(f"**SteamID:** `{profile['steam_id']}`")
                             st.write(f"**Игр в библиотеке:** {profile['games_count']}")
-                            st.write(f"**Стоимость библиотеки:** ${float(profile['library_value']):,.2f}")
-                            st.write(f"**Стоимость инвентаря:** ${float(profile['inventory_value']):,.2f}")
-                            st.write(f"**Общая стоимость:** ${float(profile['total_value']):,.2f}")
+                            st.write(f"**Стоимость библиотеки:** {format_currency(profile['library_value'])}")
+                            st.write(f"**Стоимость инвентаря:** {format_currency(profile['inventory_value'])}")
+                            st.write(f"**Общая стоимость:** {format_currency(profile['total_value'])}")
                             st.write(f"**Ссылка:** {profile['profile_url']}")
                             
                             # Кнопка для просмотра истории профиля
@@ -615,9 +1066,8 @@ def main():
             display_df.columns = ['Время парсинга', 'Всего', 'Успешно', 'Ошибок',
                                 'Всего игр', 'Ср. уровень', 'Общая стоимость']
             
-            display_df['Общая стоимость'] = display_df['Общая стоимость'].apply(
-                lambda x: f"${float(x):,.2f}" if x else "$0"
-            )
+            display_df['Общая стоимость'] = display_df['Общая стоимость'].apply(format_currency)
+            display_df['Ср. уровень'] = display_df['Ср. уровень'].apply(lambda x: f"{float(x):.1f}")
             
             st.dataframe(display_df, use_container_width=True)
             
@@ -645,12 +1095,12 @@ def main():
         
         with col1:
             st.info("""
-            ### 🎯 Новые возможности:
+            ### 🎯 Возможности системы:
             1. **PostgreSQL хранилище** всех данных
             2. **История изменений** каждого профиля
             3. **Сравнение сессий** во времени
             4. **Графики и аналитика** в реальном времени
-            5. **PgAdmin** для управления БД
+            5. **Экспорт в Word** и JSON
             """)
         
         with col2:
@@ -661,7 +1111,7 @@ def main():
             if sessions:
                 for s in sessions:
                     st.write(f"📅 {s['parse_time_display']}")
-                    st.write(f"   ✅ {s['successful_profiles']}/{s['total_profiles']} | 💰 ${s['grand_total_value']:,.2f}")
+                    st.write(f"   ✅ {s['successful_profiles']}/{s['total_profiles']} | 💰 {format_currency(s['grand_total_value'])}")
                     st.divider()
             else:
                 st.write("Нет данных. Запустите парсинг!")
@@ -670,7 +1120,7 @@ def main():
         st.divider()
         st.subheader("🔧 Статус системы")
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         
         with col1:
             if STEAM_API_KEY:
@@ -680,15 +1130,10 @@ def main():
         
         with col2:
             try:
-                with db.get_cursor() as cursor:
-                    cursor.execute("SELECT COUNT(*) FROM profiles")
-                    count = cursor.fetchone()['count']
-                    st.success(f"✅ PostgreSQL: OK (профилей: {count})")
+                stats = db.get_stats()
+                st.success(f"✅ PostgreSQL: OK (профилей: {stats['total_profiles']})")
             except:
                 st.error("❌ PostgreSQL: Ошибка подключения")
-        
-        with col3:
-            st.info(f"📊 Аккаунтов в мониторинге: {len(STEAM_ACCOUNTS)}")
 
 # ==================== ФУНКЦИЯ ДЛЯ АВТОМАТИЧЕСКОГО ПАРСИНГА ====================
 

@@ -23,28 +23,9 @@ services:
       timeout: 5s
       retries: 5
 
-  pgadmin:
-    image: dpage/pgadmin4:7
-    container_name: steam_parser_pgadmin
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@steam.com
-      PGADMIN_DEFAULT_PASSWORD: admin
-      PGADMIN_CONFIG_SERVER_MODE: 'False'
-    ports:
-      - "5050:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
-    networks:
-      - steam_network
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
 networks:
   steam_network:
     driver: bridge
 
 volumes:
   postgres_data:
-  pgadmin_data:
