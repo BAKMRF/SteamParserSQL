@@ -44,7 +44,8 @@ jobs:
             cd /root/SteamParserSQL
             
             echo "📥 Pulling latest code..."
-            git pull
+            git fetch origin
+            git reset --hard origin/main
             
             echo "📦 Updating Python packages..."
             source venv/bin/activate
