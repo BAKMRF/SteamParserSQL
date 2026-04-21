@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Настройки PostgreSQL
+# Настройки Postgre
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', '127.0.0.1'),
     'port': os.getenv('DB_PORT', '5433'),
