@@ -52,7 +52,7 @@ jobs:
             pip install -r requirements.txt --quiet
             
             echo "🔄 Restarting Streamlit..."
-            pkill -f "streamlit run app.py" || true
-            nohup streamlit run app.py --server.port 8501 --server.address 0.0.0.0 > streamlit.log 2>&1 &
+            systemctl restart steam-parser
+            systemctl status steam-parser --no-pager
             
             echo "✅ Deploy completed at $(date)"
