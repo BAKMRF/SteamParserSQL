@@ -810,12 +810,12 @@ def format_currency(value):
 
 def main():
     st.set_page_config(
-        page_title="Steam Parser with CI/CD TEST 2",
+        page_title="Steam Parser with PostgreSQL",
         page_icon="🎮",
         layout="wide"
     )
     
-    st.title("🎮 Steam Account Parser with CI/CD TEST")
+    st.title("🎮 Steam Account Parser with PostgreSQL")
     
     # Инициализация сервисов (с silent=True, чтобы убрать лишние сообщения)
     db = DatabaseManager(DB_CONFIG, silent=True)
