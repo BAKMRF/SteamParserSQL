@@ -1,0 +1,27 @@
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# Переменные окружения (пароли!)
+.env
+
+# Данные и логи
+data/
+*.log
+streamlit.log
+cron.log
+parser.log
+
+# Word отчёты
+*.docx
+
+# Кеш Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.vscode/
+.idea/
