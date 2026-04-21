@@ -810,7 +810,7 @@ def format_currency(value):
 
 def main():
     st.set_page_config(
-        page_title="Steam Parser with CI/CD TEST",
+        page_title="Steam Parser with CI/CD TEST 2",
         page_icon="🎮",
         layout="wide"
     )
