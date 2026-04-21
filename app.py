@@ -815,7 +815,7 @@ def main():
         layout="wide"
     )
     
-    st.title("🎮 Steam Account Parser with PostgreSQL")
+    st.title("🎮 Steam Account Parser with CI/CD TEST")
     
     # Инициализация сервисов (с silent=True, чтобы убрать лишние сообщения)
     db = DatabaseManager(DB_CONFIG, silent=True)
