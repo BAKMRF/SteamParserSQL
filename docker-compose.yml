@@ -1,4 +1,3 @@
-cat > /root/SteamParserSQL/docker-compose.yml << 'EOF'
 services:
   postgres:
     image: postgres:15
@@ -82,6 +81,7 @@ services:
       - ./logs:/opt/airflow/logs
       - ./parser.py:/opt/airflow/parser.py
       - ./requirements.txt:/opt/airflow/requirements.txt
+      - ./check_db.py:/opt/airflow/check_db.py 
     command: webserver
     networks:
       - steam_network
@@ -107,6 +107,7 @@ services:
       - ./logs:/opt/airflow/logs
       - ./parser.py:/opt/airflow/parser.py
       - ./requirements.txt:/opt/airflow/requirements.txt
+      - ./check_db.py:/opt/airflow/check_db.py 
     command: scheduler
     networks:
       - steam_network
@@ -119,4 +120,3 @@ networks:
 volumes:
   postgres_data:
   airflow_db_data:
-EOF
