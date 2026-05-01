@@ -215,6 +215,85 @@ class DatabaseManager:
                   profile_data.get('inventory_value', 0), profile_data.get('parsed_at', datetime.now()),
                   status, error))
     
+    def get_sessions(self, limit=100):
+        """Получает список сессий парсинга"""
+        with self.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    ps.id as session_id,
+                    ps.parse_time,
+                    ps.parse_time_display,
+                    ps.total_profiles,
+                    ps.successful_profiles,
+                    ps.failed_profiles,
+                    ps.status,
+                    COUNT(DISTINCT p.country) as countries_count,
+                    COALESCE(SUM(psnap.games_count), 0) as total_games,
+                    COALESCE(AVG(psnap.steam_level), 0)::NUMERIC(10,2) as avg_level,
+                    COALESCE(SUM(psnap.library_value), 0) as total_library_value,
+                    COALESCE(SUM(psnap.inventory_value), 0) as total_inventory_value,
+                    COALESCE(SUM(psnap.library_value + psnap.inventory_value), 0) as grand_total_value
+                FROM parse_sessions ps
+                LEFT JOIN profile_snapshots psnap ON ps.id = psnap.session_id
+                LEFT JOIN profiles p ON psnap.profile_id = p.id
+                GROUP BY ps.id, ps.parse_time, ps.parse_time_display, 
+                         ps.total_profiles, ps.successful_profiles, ps.failed_profiles, ps.status
+                ORDER BY ps.parse_time DESC 
+                LIMIT %s
+            """, (limit,))
+            return cursor.fetchall()
+    
+    def get_session_profiles(self, session_id):
+        """Получает все профили для конкретной сессии"""
+        with self.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    p.*,
+                    psnap.steam_level as snapshot_level,
+                    psnap.games_count,
+                    psnap.library_value,
+                    psnap.inventory_value,
+                    psnap.library_value + psnap.inventory_value as total_value,
+                    psnap.parsed_at,
+                    psnap.status as snapshot_status,
+                    psnap.error_message
+                FROM profile_snapshots psnap
+                JOIN profiles p ON psnap.profile_id = p.id
+                WHERE psnap.session_id = %s
+                ORDER BY psnap.library_value + psnap.inventory_value DESC
+            """, (session_id,))
+            return cursor.fetchall()
+    
+    def get_profile_history(self, profile_id, limit=50):
+        """Получает историю изменений профиля"""
+        with self.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    s.parse_time,
+                    s.parse_time_display,
+                    psnap.*
+                FROM profile_snapshots psnap
+                JOIN parse_sessions s ON psnap.session_id = s.id
+                WHERE psnap.profile_id = %s
+                ORDER BY s.parse_time DESC
+                LIMIT %s
+            """, (profile_id, limit))
+            return cursor.fetchall()
+    
+    def get_stats(self):
+        """Получает общую статистику по БД"""
+        with self.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    (SELECT COUNT(*) FROM profiles) as total_profiles,
+                    (SELECT COUNT(*) FROM parse_sessions) as total_sessions,
+                    (SELECT COUNT(*) FROM profile_snapshots) as total_snapshots,
+                    (SELECT MAX(parse_time) FROM parse_sessions) as last_parse,
+                    (SELECT SUM(games_count) FROM profile_snapshots) as total_games,
+                    (SELECT SUM(library_value + inventory_value) FROM profile_snapshots) as total_value
+            """)
+            return cursor.fetchone()
+
     def get_session_by_id(self, session_id):
         with self.get_cursor() as cursor:
             cursor.execute("""
