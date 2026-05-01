@@ -72,7 +72,7 @@ streamlit run app.py
 Сервис	URL	                  Логин/Пароль
 Airflow	http://localhost:8081	admin / admin
 Streamlit	http://localhost:8501	—
-
+```
 📅 Расписание парсинга
 Airflow DAG запускается каждые 6 часов (0 */6 * * *).
 Можно запустить вручную: Airflow UI → Play ▶️ → Trigger DAG.
