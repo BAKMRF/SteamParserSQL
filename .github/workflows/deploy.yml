@@ -57,5 +57,8 @@ jobs:
             echo "🔄 Restarting Streamlit..."
             systemctl restart steam-parser
             systemctl status steam-parser --no-pager
+
+            echo "🔄 Restarting Airflow..."
+            docker compose restart airflow-scheduler airflow-webserver
             
             echo "✅ Deploy completed at $(date)"
