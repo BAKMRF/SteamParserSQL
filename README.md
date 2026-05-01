@@ -1,112 +1,107 @@
-# Steam Parser & Analytics System
+# 🎮 Steam Parser & Analytics System
 
-##  Описание проекта
+Система для сбора, хранения и анализа данных Steam-аккаунтов с оркестрацией через Apache Airflow.
 
-Система для сбора, хранения и анализа данных Steam-аккаунтов.
+## 📊 Архитектура
+┌─────────────────┐ ┌──────────────────┐ ┌─────────────────┐
+│ Steam API │───▶│ Apache Airflow │───▶│ PostgreSQL │
+│ (внешний мир) │ │ (оркестрация) │ │ (хранение) │
+└─────────────────┘ └──────────────────┘ └─────────────────┘
+│ │
+▼ ▼
+┌──────────────┐ ┌──────────────┐
+│ Веб-интерфейс│ │ Streamlit │
+│ Airflow UI │ │ Дашборд │
+│ :8081 │ │ :8501 │
+└──────────────┘ └──────────────┘
 
-Проект реализует полноценный ETL pipeline:
+## 🛠 Стек технологий
 
-* Extract — получение данных через Steam API
-* Transform — обработка и расчет метрик
-* Load — загрузка данных в PostgreSQL
+- **Python 3.10+** — парсер, дашборд
+- **PostgreSQL 15** — хранение данных
+- **Apache Airflow 2.9** — оркестрация и расписание
+- **Streamlit** — веб-интерфейс аналитики
+- **Docker / Docker Compose** — контейнеризация
+- **GitHub Actions** — CI/CD
 
-Также включает веб-интерфейс для анализа данных и отслеживания изменений.
+## 📦 Структура проекта
+SteamParserSQL/
+├── .github/workflows/deploy.yml # CI/CD: тесты + деплой
+├── dags/
+│ └── steam_parser_dag.py # Airflow DAG (расписание парсинга)
+├── parser.py # Модуль парсера (БД + Steam API)
+├── app.py # Streamlit дашборд
+├── docker-compose.yml # PostgreSQL + Airflow
+├── init.sql # Схема БД
+├── requirements.txt # Python зависимости
+├── .env # Переменные окружения
+└── README.md
 
----
+## 🚀 Быстрый старт
 
-##  Стек технологий
+### Требования
+- Docker и Docker Compose
+- Python 3.10+ (для локальной разработки)
+- Steam API ключ
 
-* Python
-* PostgreSQL
-* Streamlit
-* Plotly
-* Requests
-* Psycopg2
+### Установка
 
----
-
-##  Архитектура
-
-Проект состоит из нескольких компонентов:
-
-### 1. Парсер (SteamParser)
-
-* Работа с Steam API
-* Получение данных пользователей
-* Обработка JSON
-
-### 2. Data Layer (PostgreSQL)
-
-* Таблицы:
-
-  * profiles
-  * parse_sessions
-  * profile_snapshots
-* Индексы для оптимизации
-* View для аналитики
-
-### 3. ETL Pipeline
-
-* Сбор данных
-* Трансформация
-* Сохранение в БД
-
-### 4. Веб-интерфейс
-
-* Дашборд на Streamlit
-* Визуализация данных
-* История изменений
-
----
-
-##  Автоматизация
-
-* Проект развернут на удаленном сервере
-* Используется **crontab** для автоматического запуска парсинга
-* Реализован batch processing
-* Обеспечена стабильная работа сервиса (24/7)
-
----
-
-##  Возможности
-
-* Сбор данных Steam аккаунтов
-* Хранение истории изменений
-* Анализ данных во времени
-* Визуализация (графики, статистика)
-* Экспорт отчетов
-
----
-
-## Запуск проекта
-
+1. Клонируй репозиторий:
 ```bash
-git clone https://github.com/BAKMRF/SteamParserSQL
+git clone https://github.com/BAKMRF/SteamParserSQL.git
 cd SteamParserSQL
 
+2. Настрой .env:
+DB_HOST=127.0.0.1
+DB_PORT=5433
+DB_NAME=steam_parser
+DB_USER=steam_user
+DB_PASSWORD=steam_password
+STEAM_API_KEY=твой_ключ
+
+3. Запусти сервисы:
+docker compose up -d
+
+4. Запусти Streamlit:
 pip install -r requirements.txt
-
 streamlit run app.py
-```
 
----
+Доступ к сервисам
+Сервис	URL	                  Логин/Пароль
+Airflow	http://localhost:8081	admin / admin
+Streamlit	http://localhost:8501	—
 
-##  Что реализовано
+📅 Расписание парсинга
+Airflow DAG запускается каждые 6 часов (0 */6 * * *).
+Можно запустить вручную: Airflow UI → Play ▶️ → Trigger DAG.
 
-* ETL pipeline
-* Работа с API
-* Проектирование БД
-* Data modeling
-* Визуализация данных
-* Автоматизация сбора данных
+🔄 CI/CD
+При каждом пуше в main:
 
----
+GitHub Actions проверяет синтаксис app.py и parser.py
 
-##  Цель проекта
+Устанавливает зависимости
 
-Практика навыков Data Engineering:
+Деплоит на сервер
 
-* работа с данными
-* построение pipeline
-* интеграция API
-* работа с БД
+Перезапускает Streamlit и Airflow
+
+📊 Возможности
+Парсинг Steam аккаунтов через Steam Web API
+
+Сохранение в PostgreSQL (история изменений)
+
+Дашборд на Streamlit с графиками Plotly
+
+Оркестрация через Apache Airflow
+
+Автоматический деплой через CI/CD
+
+Docker-контейнеризация всех сервисов
+
+🗄 Схема БД
+parse_sessions — сессии парсинга
+
+profiles — профили Steam
+
+profile_snapshots — снимки данных (история)
