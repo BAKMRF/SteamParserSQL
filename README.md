@@ -73,6 +73,16 @@ streamlit run app.py
 Airflow	http://localhost:8081	admin / admin
 Streamlit	http://localhost:8501	—
 ```
+## ⚙️ Airflow DAG
+
+DAG состоит из трёх шагов:
+
+| Задача | Оператор | Описание |
+|--------|----------|----------|
+| `check_environment` | BashOperator | Проверка переменных окружения |
+| `parse_steam_profiles` | PythonOperator | Парсинг Steam аккаунтов |
+| `verify_database` | PostgresOperator | Проверка записи в БД |
+
 📅 Расписание парсинга
 Airflow DAG запускается каждые 6 часов (0 */6 * * *).
 
