@@ -56,16 +56,15 @@ def main():
                 
                 selected_label = st.selectbox("Выберите сессию:", list(session_options.keys()))
                 
-                if st.button("📖 Показать сессию", use_container_width=True):
+                if st.button("📖 Показать сессию", use_container_width=True, key='btn_session'):
                     st.session_state.selected_session_id = session_options[selected_label]
                     st.session_state.pop('selected_profile_id', None)
-                    st.rerun()
+                    st.session_state.pop('show_all_sessions', None)
                 
-                if st.button("📊 Все сессии", use_container_width=True):
+                if st.button("📊 Все сессии", use_container_width=True, key='btn_all'):
                     st.session_state.show_all_sessions = True
                     st.session_state.pop('selected_session_id', None)
                     st.session_state.pop('selected_profile_id', None)
-                    st.rerun()
             else:
                 st.info("📭 Сессий пока нет")
         except Exception as e:
