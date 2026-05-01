@@ -58,10 +58,13 @@ def main():
                 
                 if st.button("📖 Показать сессию", use_container_width=True):
                     st.session_state.selected_session_id = session_options[selected_label]
+                    st.session_state.pop('selected_profile_id', None)
                     st.rerun()
                 
                 if st.button("📊 Все сессии", use_container_width=True):
                     st.session_state.show_all_sessions = True
+                    st.session_state.pop('selected_session_id', None)
+                    st.session_state.pop('selected_profile_id', None)
                     st.rerun()
             else:
                 st.info("📭 Сессий пока нет")
@@ -82,8 +85,39 @@ def main():
         except:
             pass
     
-    # Основная область
-    if 'selected_session_id' in st.session_state:
+    # ==================== ОСНОВНАЯ ОБЛАСТЬ ====================
+    
+    # Режим: история профиля
+    if 'selected_profile_id' in st.session_state:
+        st.subheader(f"📈 История профиля: {st.session_state.get('selected_profile_name', '')}")
+        history = db.get_profile_history(st.session_state.selected_profile_id)
+        if history:
+            df = pd.DataFrame(history)
+            df['parse_time'] = pd.to_datetime(df['parse_time'])
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                fig = px.line(df, x='parse_time', y='steam_level', title="Изменение уровня Steam")
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                fig = px.line(df, x='parse_time', y='games_count', title="Изменение количества игр")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            fig = px.line(df, x='parse_time', y=['library_value', 'inventory_value', 'total_value'],
+                         title="Изменение стоимости")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.dataframe(df[['parse_time_display', 'steam_level', 'games_count', 'library_value', 'inventory_value', 'total_value']],
+                         use_container_width=True)
+        else:
+            st.info("Нет данных истории для этого профиля")
+        
+        if st.button("⬅️ Назад к сессии"):
+            st.session_state.pop('selected_profile_id', None)
+            st.rerun()
+    
+    # Режим: просмотр сессии
+    elif 'selected_session_id' in st.session_state:
         session_id = st.session_state.selected_session_id
         session_data = db.get_session_by_id(session_id)
         
@@ -152,21 +186,10 @@ def main():
                                 st.rerun()
                 
                 if st.button("⬅️ Назад к списку"):
-                    del st.session_state.selected_session_id
+                    st.session_state.pop('selected_session_id', None)
                     st.rerun()
-        
-        if 'selected_profile_id' in st.session_state:
-            st.divider()
-            st.subheader(f"📈 История: {st.session_state.selected_profile_name}")
-            history = db.get_profile_history(st.session_state.selected_profile_id)
-            if history:
-                df = pd.DataFrame(history)
-                df['parse_time'] = pd.to_datetime(df['parse_time'])
-                fig = px.line(df, x='parse_time', y='steam_level', title="Уровень")
-                st.plotly_chart(fig, use_container_width=True)
-                fig = px.line(df, x='parse_time', y=['library_value', 'inventory_value', 'total_value'], title="Стоимость")
-                st.plotly_chart(fig, use_container_width=True)
     
+    # Режим: все сессии
     elif 'show_all_sessions' in st.session_state:
         st.header("📊 Все сессии")
         sessions = db.get_sessions(limit=100)
@@ -178,9 +201,10 @@ def main():
             display_df['grand_total_value'] = display_df['grand_total_value'].apply(format_currency)
             st.dataframe(display_df, use_container_width=True)
             if st.button("⬅️ Назад"):
-                del st.session_state.show_all_sessions
+                st.session_state.pop('show_all_sessions', None)
                 st.rerun()
     
+    # Главная страница
     else:
         st.header("📊 Система мониторинга Steam аккаунтов")
         st.info("""

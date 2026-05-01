@@ -297,7 +297,26 @@ class DatabaseManager:
     def get_session_by_id(self, session_id):
         with self.get_cursor() as cursor:
             cursor.execute("""
-                SELECT * FROM parse_sessions WHERE id = %s
+                SELECT 
+                    ps.id as session_id,
+                    ps.parse_time,
+                    ps.parse_time_display,
+                    ps.total_profiles,
+                    ps.successful_profiles,
+                    ps.failed_profiles,
+                    ps.status,
+                    COUNT(DISTINCT p.country) as countries_count,
+                    COALESCE(SUM(psnap.games_count), 0) as total_games,
+                    COALESCE(AVG(psnap.steam_level), 0)::NUMERIC(10,2) as avg_level,
+                    COALESCE(SUM(psnap.library_value), 0) as total_library_value,
+                    COALESCE(SUM(psnap.inventory_value), 0) as total_inventory_value,
+                    COALESCE(SUM(psnap.library_value + psnap.inventory_value), 0) as grand_total_value
+                FROM parse_sessions ps
+                LEFT JOIN profile_snapshots psnap ON ps.id = psnap.session_id
+                LEFT JOIN profiles p ON psnap.profile_id = p.id
+                WHERE ps.id = %s
+                GROUP BY ps.id, ps.parse_time, ps.parse_time_display, 
+                         ps.total_profiles, ps.successful_profiles, ps.failed_profiles, ps.status
             """, (session_id,))
             return cursor.fetchone()
 
