@@ -47,32 +47,61 @@ SteamParserSQL/
 - Steam API ключ
 
 ### Установка
+## 🚀 Установка на чистый Ubuntu
 
-1. Клонируй репозиторий:
-```bash
+sudo apt install git -y
+
+curl -fsSL https://get.docker.com | sudo sh
+
+sudo usermod -aG docker $USER
+
+newgrp docker
+
 git clone https://github.com/BAKMRF/SteamParserSQL.git
+
 cd SteamParserSQL
 
-2. Настрой .env:
-DB_HOST=127.0.0.1
-DB_PORT=5433
-DB_NAME=steam_parser
-DB_USER=steam_user
-DB_PASSWORD=steam_password
-STEAM_API_KEY=твой_ключ
+nano .env
 
-3. Запусти сервисы:
+mkdir -p ./logs/scheduler
+
+chmod -R 777 ./logs
+
 docker compose up -d
 
-4. Запусти Streamlit:
-pip install -r requirements.txt
-streamlit run app.py
+sudo apt install python3-venv python3-pip -y
 
-Доступ к сервисам
-Сервис	URL	                  Логин/Пароль
-Airflow	http://localhost:8081	admin / admin
-Streamlit	http://localhost:8501	—
-```
+python3 -m venv .venv
+
+source .venv/bin/activate
+
+pip install -r requirements.txt
+
+nohup streamlit run app.py --server.port 8501 --server.address 0.0.0.0 > streamlit.log 2>&1 &
+
+sudo ufw allow 8081
+
+sudo ufw allow 8501
+
+# .env содержимое:
+# DB_HOST=127.0.0.1
+# DB_PORT=5433
+# DB_NAME=steam_parser
+# DB_USER=steam_user
+# DB_PASSWORD=steam_password
+# STEAM_API_KEY=твой_ключ
+
+# Airflow: http://твой-ip:8081 (admin/admin)
+# Admin → Connections → + :
+# Connection Id: steam_parser_db
+# Connection Type: Postgres
+# Host: postgres
+# Schema: steam_parser
+# Login: steam_user
+# Password: steam_password
+# Port: 5432
+# Сохранить
+
 ## ⚙️ Airflow DAG
 
 DAG состоит из трёх шагов:
