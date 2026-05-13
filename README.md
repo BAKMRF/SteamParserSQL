@@ -46,9 +46,8 @@ SteamParserSQL/
 - Python 3.10+ (для локальной разработки)
 - Steam API ключ
 
-### Установка
-## 🚀 Установка на чистый Ubuntu
-
+### 🚀 Установка на чистый Ubuntu
+```
 sudo apt install git -y
 
 curl -fsSL https://get.docker.com | sudo sh
@@ -84,23 +83,24 @@ sudo ufw allow 8081
 sudo ufw allow 8501
 
 # .env содержимое:
-# DB_HOST=127.0.0.1
-# DB_PORT=5433
-# DB_NAME=steam_parser
-# DB_USER=steam_user
-# DB_PASSWORD=steam_password
-# STEAM_API_KEY=твой_ключ
+ DB_HOST=127.0.0.1
+ DB_PORT=5433
+ DB_NAME=steam_parser
+ DB_USER=steam_user
+ DB_PASSWORD=steam_password
+ STEAM_API_KEY=твой_ключ
 
 # Airflow: http://твой-ip:8081 (admin/admin)
-# Admin → Connections → + :
-# Connection Id: steam_parser_db
-# Connection Type: Postgres
-# Host: postgres
-# Schema: steam_parser
-# Login: steam_user
-# Password: steam_password
-# Port: 5432
-# Сохранить
+ Admin → Connections → + :
+ Connection Id: steam_parser_db
+ Connection Type: Postgres
+ Host: postgres
+ Schema: steam_parser
+ Login: steam_user
+ Password: steam_password
+ Port: 5432
+ Сохранить
+ ```
 
 ## ⚙️ Airflow DAG
 
